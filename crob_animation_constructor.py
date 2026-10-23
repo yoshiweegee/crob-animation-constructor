@@ -1,6 +1,6 @@
 from argparse import ArgumentParser, BooleanOptionalAction
 from collections.abc import Callable, Sequence, Iterable
-from enum import StrEnum, auto as enum_auto
+from enum import StrEnum
 from fractions import Fraction
 lazy from os import name as os_name
 from pathlib import Path
@@ -15,7 +15,7 @@ from typing import Any, Self, TypedDict, cast
 class NeedModuleError(Exception):
     def __init__(self, module_name: str, package_name: str) -> None:
         super().__init__(
-            "Module {} not found. It's likely that your Python doesn't have the {pn} package installed.\nTry running the following command in your command prompt/terminal to install the package: pip{} install --user {pn}".format(module_name, ".".join(str(version_component) for version_component in sys_version_info[:3]) if os_name == "posix" else "", pn=package_name))
+            "Module {} not found. It's likely that your Python doesn't have the {pn} package installed.\nTry running the following command in your command prompt/terminal to install the package: pip{} install --user {pn}".format(module_name, ".".join(str(version_component) for version_component in sys_version_info[:2]) if os_name == "posix" else "", pn=package_name))
 
 
 def report_error(error: BaseException) -> None:
@@ -31,27 +31,33 @@ def exit_error(error: BaseException) -> None:
 
 try:
     from PIL import UnidentifiedImageError
-    from PIL.Image import Image, Transpose, open as pil_image_open
+    from PIL.Image import Transpose, open as pil_image_open
 except ModuleNotFoundError as module_error:
     if module_error.name is not None:
         try:
             raise NeedModuleError(module_error.name, "pillow") from module_error
-        except NeedModuleError as e:
-            exit_error(e)
+        except NeedModuleError as module_error:
+            exit_error(module_error)
 
 Plist = list["Plist"] | str | dict[str, "Plist"] | float | int | str | bool
+
 RE_INT2 = re_compile(r"^\{(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)}$")
 RE_ARR_2 = re_compile(r"^\{(\{.+?}),(\{.+?})}$")
 
 
 class AnimationFormat(StrEnum):
-    WEBP = enum_auto()
-    GIF = enum_auto()
+    WEBP = "webp"
+    GIF = "gif"
     # AVIF = enum_auto()
     # JPEG_XL = enum_auto()
 
 
-VERSION = [1, 0, 1]
+class ClaBoolean(StrEnum):
+    TRUE = "true"
+    FALSE = "false"
+
+
+VERSION = [1, 1]
 VERSION_STRING = ".".join(str(component) for component in VERSION)
 
 LIMITED_REPR_ITER_LIMIT = 16
@@ -519,6 +525,8 @@ def output_anim_webp(output_dir: str, anim_name: str, frames: Sequence[FrameData
 
 def output_anim_gif(output_dir: str, anim_name: str, frames: Sequence[FrameData | None],
                     seconds_per_frame: float) -> None:
+    # TODO: most programs that display GIF will throttle delays less than 2 ticks (50 FPS, 0.02 seconds)
+    # TODO: An option should be added to choose to keep as-accurate-as-possible but throttled delays
     output_with_magick(output_dir, anim_name, frames, seconds_per_frame, "gif", (
         "-coalesce",  # realize how the frame actually displays
         "-channel", "A",  # prepare to modify alpha
@@ -535,6 +543,11 @@ def main() -> None:
     arg_parser = ArgumentParser(
         f"CookieRun: OvenBreak Animation Constructor {VERSION_STRING}",
         description="Constructs animations for CookieRun: OverBreak from relevant files",
+    )
+    arg_parser.add_argument(
+        "-v", "--version",
+        action=BooleanOptionalAction,
+        help="Display version and exit. Other arguments will be ignored",
     )
     arg_parser.add_argument(
         "sprite_sheet_file_name",
@@ -560,16 +573,28 @@ def main() -> None:
         dest="output_dir"
     )
     arg_parser.add_argument(
-        "-af", "--animation-format",
+        "-f", "--animation-format",
         default=AnimationFormat.WEBP,
         choices=AnimationFormat,
         help="Output animation format. Defaults to WebP",
         dest="anim_fmt"
     )
     arg_parser.add_argument(
-        "-v", "--version",
-        action=BooleanOptionalAction,
-        help="Display version and exit. Other arguments will be ignored",
+        "-af",
+        default=AnimationFormat.WEBP,
+        choices=AnimationFormat,
+        help="Deprecated. Use -f",
+        dest="anim_fmt",
+        deprecated=True
+    )
+    arg_parser.add_argument(
+        "-A", "--accurate-frame-delay",
+        nargs="?",
+        const=True,
+        default=False,
+        type=bool,
+        choices=ClaBoolean,
+        help=f"When animation format is GIF, use the most accurate frame delay even if the framerate would exceed 50 FPS. GIF frames advancing faster than 50 FPS are forced to delay longer in most programs"
     )
     args = arg_parser.parse_args()
 
@@ -606,7 +631,6 @@ def main() -> None:
     # ValueError, TypeError shouldn't happen
 
     print("Writing frames...")
-    frame_images: dict[str, Image] = {}
     with sprite_sheet:
         for frame_name, frame_data in frames_table.items():
             sprite = sprite_sheet.crop((
@@ -625,8 +649,6 @@ def main() -> None:
                 sprite.save(output_path)
             except OSError as e:
                 raise OutputInterruptedError(f"frame {frame_name}", str(output_path)) from e
-            # remember for making animations
-            frame_images[frame_name] = sprite
 
     anim_info = try_load_anim_info(str(args.anim_info_plist_file_name))
 
@@ -650,7 +672,12 @@ def main() -> None:
                 for frame_index in anim_data.frame_list
             )
         )
-        output_func(str(args.output_dir), anim_name, frames, anim_data.seconds_per_frame)
+
+        seconds_per_frame = anim_data.seconds_per_frame
+        if args.anim_fmt == AnimationFormat.GIF and seconds_per_frame < 0.02 and not args.accurate_frame_delay:
+            seconds_per_frame = 0.02
+
+        output_func(str(args.output_dir), anim_name, frames, seconds_per_frame)
 
     print("Done!")
 
