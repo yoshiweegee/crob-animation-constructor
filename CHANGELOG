@@ -1,0 +1,8 @@
+# Version 1.0.2
+ - Add helpful error message when the pillow package isn't installed
+
+# Version 1.0.1
+ - Fix the first frame from having twice the delay it should have
+
+# Version 1.0.0
+ - Initial public release
